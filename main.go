@@ -19,8 +19,8 @@ type Server struct {
 
 func (s *Server) shortenUrl(w http.ResponseWriter, req *http.Request) {
 	type ShortenRequest struct {
-		LongUrl string
-		Ttl     int64
+		OriginalUrl string
+		Ttl         int64
 	}
 
 	var sr ShortenRequest
@@ -37,17 +37,17 @@ func (s *Server) shortenUrl(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	_, insertErr := s.db.Exec(
+		"INSERT INTO urls (short_code, original_url, ttl) values ($1, $2, $3)",
+		shortCode, sr.OriginalUrl, sr.Ttl,
+	)
+
 	scheme := "http"
 	if req.TLS != nil {
 		scheme = "https"
 	}
 	fullShortURL := fmt.Sprintf("%s://%s/%s", scheme, req.Host, shortCode)
 	fmt.Println(fullShortURL)
-
-	_, insertErr := s.db.Exec(
-		"INSERT INTO urls (short_url, long_url, ttl) values ($1, $2, $3)",
-		fullShortURL, sr.LongUrl, sr.Ttl,
-	)
 
 	fmt.Println(insertErr)
 
@@ -67,6 +67,20 @@ func (s *Server) shortenUrl(w http.ResponseWriter, req *http.Request) {
 	if err := json.NewEncoder(w).Encode(ShortenResponse{ShortUrl: fullShortURL}); err != nil {
 		log.Printf("response encode failed: %v", err)
 	}
+}
+
+func (s *Server) resolveUrl(w http.ResponseWriter, req *http.Request) {
+	shortCode := req.PathValue("shortCode")
+
+	var original_url string
+	// Need to implement checking ttl
+	err := s.db.QueryRow("SELECT original_url FROM urls WHERE short_code = $1", shortCode).Scan(&original_url)
+	if err != nil {
+		log.Printf("failed to fetch original url: %v", err)
+		http.Error(w, "resolving failed", http.StatusInternalServerError)
+	}
+
+	http.Redirect(w, req, original_url, 302)
 }
 
 func generateShortCode() (string, error) {
@@ -105,5 +119,6 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /url", server.shortenUrl)
+	mux.HandleFunc("GET /{shortCode}", server.resolveUrl)
 	http.ListenAndServe(":8080", mux)
 }
