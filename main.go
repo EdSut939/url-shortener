@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"time"
 
 	_ "github.com/lib/pq"
 )
@@ -20,7 +21,8 @@ type Server struct {
 func (s *Server) shortenUrl(w http.ResponseWriter, req *http.Request) {
 	type ShortenRequest struct {
 		OriginalUrl string
-		Ttl         int64
+		//TODO: make TTL optional and add a default value
+		Ttl int64
 	}
 
 	var sr ShortenRequest
@@ -72,15 +74,24 @@ func (s *Server) shortenUrl(w http.ResponseWriter, req *http.Request) {
 func (s *Server) resolveUrl(w http.ResponseWriter, req *http.Request) {
 	shortCode := req.PathValue("shortCode")
 
-	var original_url string
-	// Need to implement checking ttl
-	err := s.db.QueryRow("SELECT original_url FROM urls WHERE short_code = $1", shortCode).Scan(&original_url)
+	var url_record struct {
+		original_url string
+		ttl          int64
+		created_at   time.Time
+	}
+
+	err := s.db.QueryRow("SELECT original_url, ttl, created_at FROM urls WHERE short_code = $1", shortCode).Scan(&url_record.original_url, &url_record.ttl, &url_record.created_at)
 	if err != nil {
 		log.Printf("failed to fetch original url: %v", err)
 		http.Error(w, "resolving failed", http.StatusInternalServerError)
 	}
 
-	http.Redirect(w, req, original_url, 302)
+	if time.Now().After(url_record.created_at.Add(time.Second * time.Duration(url_record.ttl))) {
+		log.Printf("Link has expired")
+		http.Error(w, "Link has expired", http.StatusBadRequest)
+	}
+
+	http.Redirect(w, req, url_record.original_url, 302)
 }
 
 func generateShortCode() (string, error) {
