@@ -64,7 +64,7 @@ func (s *Server) resolveUrl(w http.ResponseWriter, req *http.Request) {
 
 	var record UrlRecord
 
-	err := s.db.QueryRow("SELECT original_url, ttl, created_at FROM urls WHERE short_code = $1", shortCode).Scan(&record.OriginalUrl, &record.Ttl, &record.CreatedAt)
+	err := s.db.QueryRow("SELECT id, original_url, ttl, created_at, visits FROM urls WHERE short_code = $1", shortCode).Scan(&record.Id, &record.OriginalUrl, &record.Ttl, &record.CreatedAt, &record.Visits)
 	if err != nil {
 		log.Printf("failed to fetch original url: %v", err)
 		http.Error(w, "resolving failed", http.StatusInternalServerError)
@@ -74,6 +74,14 @@ func (s *Server) resolveUrl(w http.ResponseWriter, req *http.Request) {
 	if record.Ttl != nil && time.Now().After(record.CreatedAt.Add(time.Second*time.Duration(*record.Ttl))) {
 		log.Printf("Link has expired")
 		http.Error(w, "Link has expired", http.StatusBadRequest)
+		return
+	}
+
+	updateStatement := `UPDATE urls SET visits = $1 WHERE id = $2`
+	_, updateErr := s.db.Exec(updateStatement, record.Visits+1, record.Id)
+	if updateErr != nil {
+		log.Printf("failed to update visits record in the DB: %v", updateErr)
+		http.Error(w, "something went wrong, try again", http.StatusInternalServerError)
 		return
 	}
 

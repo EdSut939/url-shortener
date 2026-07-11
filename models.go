@@ -12,7 +12,9 @@ type ShortenResponse struct {
 }
 
 type UrlRecord struct {
+	Id          int64
 	OriginalUrl string
 	Ttl         *int64
 	CreatedAt   time.Time
+	Visits      int64
 }
