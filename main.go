@@ -20,12 +20,12 @@ type Server struct {
 
 func (s *Server) shortenUrl(w http.ResponseWriter, req *http.Request) {
 	type ShortenRequest struct {
-		OriginalUrl string
-		//TODO: make TTL optional and add a default value
-		Ttl int64
+		OriginalUrl string `json:"originalUrl"`
+		Ttl         *int64 `json:"ttl,omitempty"`
 	}
 
 	var sr ShortenRequest
+
 	err := json.NewDecoder(req.Body).Decode(&sr)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -76,7 +76,7 @@ func (s *Server) resolveUrl(w http.ResponseWriter, req *http.Request) {
 
 	var url_record struct {
 		original_url string
-		ttl          int64
+		ttl          *int64
 		created_at   time.Time
 	}
 
@@ -86,7 +86,7 @@ func (s *Server) resolveUrl(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "resolving failed", http.StatusInternalServerError)
 	}
 
-	if time.Now().After(url_record.created_at.Add(time.Second * time.Duration(url_record.ttl))) {
+	if url_record.ttl != nil && time.Now().After(url_record.created_at.Add(time.Second*time.Duration(*url_record.ttl))) {
 		log.Printf("Link has expired")
 		http.Error(w, "Link has expired", http.StatusBadRequest)
 	}
