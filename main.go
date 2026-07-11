@@ -19,11 +19,6 @@ type Server struct {
 }
 
 func (s *Server) shortenUrl(w http.ResponseWriter, req *http.Request) {
-	type ShortenRequest struct {
-		OriginalUrl string `json:"originalUrl"`
-		Ttl         *int64 `json:"ttl,omitempty"`
-	}
-
 	var sr ShortenRequest
 
 	err := json.NewDecoder(req.Body).Decode(&sr)
@@ -49,9 +44,6 @@ func (s *Server) shortenUrl(w http.ResponseWriter, req *http.Request) {
 		scheme = "https"
 	}
 	fullShortURL := fmt.Sprintf("%s://%s/%s", scheme, req.Host, shortCode)
-	fmt.Println(fullShortURL)
-
-	fmt.Println(insertErr)
 
 	if insertErr != nil {
 		log.Printf("insert failed: %v", insertErr)
@@ -62,10 +54,6 @@ func (s *Server) shortenUrl(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	type ShortenResponse struct {
-		ShortUrl string `json:"short_url"`
-	}
-
 	if err := json.NewEncoder(w).Encode(ShortenResponse{ShortUrl: fullShortURL}); err != nil {
 		log.Printf("response encode failed: %v", err)
 	}
@@ -74,24 +62,22 @@ func (s *Server) shortenUrl(w http.ResponseWriter, req *http.Request) {
 func (s *Server) resolveUrl(w http.ResponseWriter, req *http.Request) {
 	shortCode := req.PathValue("shortCode")
 
-	var url_record struct {
-		original_url string
-		ttl          *int64
-		created_at   time.Time
-	}
+	var record UrlRecord
 
-	err := s.db.QueryRow("SELECT original_url, ttl, created_at FROM urls WHERE short_code = $1", shortCode).Scan(&url_record.original_url, &url_record.ttl, &url_record.created_at)
+	err := s.db.QueryRow("SELECT original_url, ttl, created_at FROM urls WHERE short_code = $1", shortCode).Scan(&record.OriginalUrl, &record.Ttl, &record.CreatedAt)
 	if err != nil {
 		log.Printf("failed to fetch original url: %v", err)
 		http.Error(w, "resolving failed", http.StatusInternalServerError)
+		return
 	}
 
-	if url_record.ttl != nil && time.Now().After(url_record.created_at.Add(time.Second*time.Duration(*url_record.ttl))) {
+	if record.Ttl != nil && time.Now().After(record.CreatedAt.Add(time.Second*time.Duration(*record.Ttl))) {
 		log.Printf("Link has expired")
 		http.Error(w, "Link has expired", http.StatusBadRequest)
+		return
 	}
 
-	http.Redirect(w, req, url_record.original_url, 302)
+	http.Redirect(w, req, record.OriginalUrl, 302)
 }
 
 func generateShortCode() (string, error) {
