@@ -15,10 +15,11 @@ import (
 )
 
 type Server struct {
-	db *sql.DB
+	service *UrlService
 }
 
 func (s *Server) shortenUrl(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
 	var sr ShortenRequest
 
 	err := json.NewDecoder(req.Body).Decode(&sr)
@@ -34,22 +35,17 @@ func (s *Server) shortenUrl(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	_, insertErr := s.db.Exec(
-		"INSERT INTO urls (short_code, original_url, ttl) values ($1, $2, $3)",
-		shortCode, sr.OriginalUrl, sr.Ttl,
-	)
+	if err := s.service.InsertUrl(ctx, shortCode, sr.OriginalUrl, sr.Ttl); err != nil {
+		log.Printf("insert failed: %v", err)
+		http.Error(w, "insert failed", http.StatusInternalServerError)
+		return
+	}
 
 	scheme := "http"
 	if req.TLS != nil {
 		scheme = "https"
 	}
 	fullShortURL := fmt.Sprintf("%s://%s/%s", scheme, req.Host, shortCode)
-
-	if insertErr != nil {
-		log.Printf("insert failed: %v", insertErr)
-		http.Error(w, "insert failed", http.StatusInternalServerError)
-		return
-	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -60,11 +56,10 @@ func (s *Server) shortenUrl(w http.ResponseWriter, req *http.Request) {
 }
 
 func (s *Server) resolveUrl(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
 	shortCode := req.PathValue("shortCode")
 
-	var record UrlRecord
-
-	err := s.db.QueryRow("SELECT id, original_url, ttl, created_at, visits FROM urls WHERE short_code = $1", shortCode).Scan(&record.Id, &record.OriginalUrl, &record.Ttl, &record.CreatedAt, &record.Visits)
+	record, err := s.service.GetOriginalUrlByShortCode(ctx, shortCode)
 	if err != nil {
 		log.Printf("failed to fetch original url: %v", err)
 		http.Error(w, "resolving failed", http.StatusInternalServerError)
@@ -77,10 +72,8 @@ func (s *Server) resolveUrl(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	updateStatement := `UPDATE urls SET visits = $1 WHERE id = $2`
-	_, updateErr := s.db.Exec(updateStatement, record.Visits+1, record.Id)
-	if updateErr != nil {
-		log.Printf("failed to update visits record in the DB: %v", updateErr)
+	if err := s.service.InrementVisitCount(ctx, record.Id); err != nil {
+		log.Printf("failed to update visits: %v", err)
 		http.Error(w, "something went wrong, try again", http.StatusInternalServerError)
 		return
 	}
@@ -120,10 +113,12 @@ func main() {
 		log.Fatal(err)
 	}
 
-	server := &Server{db: db}
+	repo := NewPostgresUrlRepository(db)
+	service := NewUrlService(repo)
+	server := &Server{service: service}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /url", server.shortenUrl)
 	mux.HandleFunc("GET /{shortCode}", server.resolveUrl)
-	http.ListenAndServe(":8080", mux)
+	log.Fatal(http.ListenAndServe(":8080", mux))
 }
