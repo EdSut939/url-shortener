@@ -11,7 +11,7 @@ import (
 	"os"
 	"time"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 )
 
 type Server struct {
@@ -28,31 +28,44 @@ func (s *Server) shortenUrl(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	shortCode, err := generateShortCode()
-	if err != nil {
-		log.Printf("generation of short code failed: %v", err)
-		http.Error(w, "generation failed", http.StatusInternalServerError)
+	const maxRetries = 3
+
+	//TODO: cover with tests
+	for attempt := range maxRetries {
+		shortCode, err := generateShortCode()
+		if err != nil {
+			log.Printf("generation of short code failed: %v", err)
+			http.Error(w, "generation failed", http.StatusInternalServerError)
+			return
+		}
+
+		if err := s.service.InsertUrl(ctx, shortCode, sr.OriginalUrl, sr.Ttl); err != nil {
+			if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
+				log.Printf("short code collision, retry %d/%d", attempt+1, maxRetries)
+				continue
+			}
+			log.Printf("insert failed: %v", err)
+			http.Error(w, "insert failed", http.StatusInternalServerError)
+			return
+		}
+
+		scheme := "http"
+		if req.TLS != nil {
+			scheme = "https"
+		}
+		fullShortURL := fmt.Sprintf("%s://%s/%s", scheme, req.Host, shortCode)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		if err := json.NewEncoder(w).Encode(ShortenResponse{ShortUrl: fullShortURL}); err != nil {
+			log.Printf("response encode failed: %v", err)
+		}
 		return
 	}
 
-	if err := s.service.InsertUrl(ctx, shortCode, sr.OriginalUrl, sr.Ttl); err != nil {
-		log.Printf("insert failed: %v", err)
-		http.Error(w, "insert failed", http.StatusInternalServerError)
-		return
-	}
-
-	scheme := "http"
-	if req.TLS != nil {
-		scheme = "https"
-	}
-	fullShortURL := fmt.Sprintf("%s://%s/%s", scheme, req.Host, shortCode)
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-
-	if err := json.NewEncoder(w).Encode(ShortenResponse{ShortUrl: fullShortURL}); err != nil {
-		log.Printf("response encode failed: %v", err)
-	}
+	log.Printf("exhausted %d retries generating a unique short code", maxRetries)
+	http.Error(w, "insert failed", http.StatusInternalServerError)
 }
 
 func (s *Server) resolveUrl(w http.ResponseWriter, req *http.Request) {
