@@ -1,17 +1,12 @@
 package main
 
 import (
-	"crypto/rand"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"log"
-	"math/big"
 	"net/http"
 	"os"
 	"time"
-
-	"github.com/lib/pq"
 )
 
 type Server struct {
@@ -28,44 +23,23 @@ func (s *Server) shortenUrl(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	const maxRetries = 3
-
-	//TODO: cover with tests
-	for attempt := range maxRetries {
-		shortCode, err := generateShortCode()
-		if err != nil {
-			log.Printf("generation of short code failed: %v", err)
-			http.Error(w, "generation failed", http.StatusInternalServerError)
-			return
-		}
-
-		if err := s.service.InsertUrl(ctx, shortCode, sr.OriginalUrl, sr.Ttl); err != nil {
-			if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
-				log.Printf("short code collision, retry %d/%d", attempt+1, maxRetries)
-				continue
-			}
-			log.Printf("insert failed: %v", err)
-			http.Error(w, "insert failed", http.StatusInternalServerError)
-			return
-		}
-
-		scheme := "http"
-		if req.TLS != nil {
-			scheme = "https"
-		}
-		fullShortURL := fmt.Sprintf("%s://%s/%s", scheme, req.Host, shortCode)
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-
-		if err := json.NewEncoder(w).Encode(ShortenResponse{ShortUrl: fullShortURL}); err != nil {
-			log.Printf("response encode failed: %v", err)
-		}
-		return
+	httpScheme := "http"
+	if req.TLS != nil {
+		httpScheme = "https"
 	}
 
-	log.Printf("exhausted %d retries generating a unique short code", maxRetries)
-	http.Error(w, "insert failed", http.StatusInternalServerError)
+	fullShortUrl, insertErr := s.service.InsertUrl(ctx, sr, httpScheme, req.Host)
+
+	if insertErr != nil {
+		http.Error(w, "Url shortening failed", http.StatusInternalServerError)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	if err := json.NewEncoder(w).Encode(ShortenResponse{ShortUrl: fullShortUrl}); err != nil {
+		log.Printf("response encode failed: %v", err)
+	}
 }
 
 func (s *Server) resolveUrl(w http.ResponseWriter, req *http.Request) {
@@ -92,22 +66,6 @@ func (s *Server) resolveUrl(w http.ResponseWriter, req *http.Request) {
 	}
 
 	http.Redirect(w, req, record.OriginalUrl, 302)
-}
-
-func generateShortCode() (string, error) {
-	const (
-		alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-		codeLen  = 6
-	)
-	result := make([]byte, codeLen)
-	for i := range result {
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
-		if err != nil {
-			return "", fmt.Errorf("failed to generate random number: %w", err)
-		}
-		result[i] = alphabet[n.Int64()]
-	}
-	return string(result), nil
 }
 
 func main() {
